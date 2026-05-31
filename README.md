@@ -1,498 +1,428 @@
-# Technical Assignment: Dockerized Secure Task Manager
+# Task Manager — Dockerized Secure Full-Stack App
 
-## Candidate
+A small team task manager with Keycloak authentication, owner-scoped data, Redis-cached analytics, PostgreSQL persistence, and a full Docker Compose setup.
 
-Sostene Ngarukiyimana
-
-## Timebox
-
-Please spend no more than **2 days** on this assignment.
-
-We value clear engineering decisions, working fundamentals, security awareness, and documentation more than feature completeness. If something is incomplete, document what is missing, why it is missing, and how you would finish it with more time.
+**Candidate:** Sostene Ngarukiyimana
 
 ---
 
-## Objective
+## Table of contents
 
-Build a Dockerized full-stack **Team Task Manager** application that demonstrates your ability to design, build, secure, containerize, and document a real application.
-
-The application should demonstrate:
-
-- Frontend and backend development
-- Authentication using an identity provider
-- Secure API design
-- PostgreSQL database usage
-- Redis cache or session usage
-- Docker and Docker Compose
-- PostgreSQL backup and restore using `pg_dump`
-- Basic analytics and visualization
-- Responsible use of AI tools during development
-
----
-
-## Product Brief
-
-Create a small task management application where authenticated users can manage their own tasks.
-
-A user should be able to:
-
-1. Log in using Keycloak
-2. Log out
-3. View their profile information from Keycloak
-4. Create tasks
-5. View tasks
-6. Update tasks
-7. Delete tasks
-8. Mark tasks as `todo`, `in_progress`, or `done`
-9. View a dashboard with task analytics and visualizations
-10. Access only their own tasks and analytics
+1. [Project overview](#1-project-overview)
+2. [Architecture](#2-architecture)
+3. [Setup](#3-setup)
+4. [Test user credentials](#4-test-user-credentials)
+5. [Environment variables](#5-environment-variables)
+6. [API documentation](#6-api-documentation)
+7. [Dashboard and visualizations](#7-dashboard-and-visualizations)
+8. [Redis usage](#8-redis-usage)
+9. [Backup and restore](#9-backup-and-restore)
+10.[Known limitations](#10-known-limitations)
+11.[AI usage](#11-ai-usage)
+12.[Repository structure](#12-repository-structure)
 
 ---
 
-## Required Stack
+## 1. Project overview
 
-You may choose the backend and frontend framework, but the final solution must include the following services:
+An authenticated user can:
 
-- Frontend application
-- Backend API
-- PostgreSQL
-- Redis
-- Keycloak
-- Docker Compose
+- Sign in and out through Keycloak.
+- View their profile information (from the JWT).
+- Create, view, update, and delete tasks (`todo` / `in_progress` / `done`, plus optional `priority` and `due_date`).
+- See a dashboard with three analytics views (stat cards, tasks by status, tasks created over time).
+- See only their own tasks and analytics — every backend query is scoped by the user's Keycloak `sub`.
 
-### Acceptable Backend Options
+### Stack
 
-You may use one of the following, or another reasonable backend framework:
-
-- Node.js with Express or NestJS
-- Python with Django or FastAPI
-- Java with Spring Boot
-
-### Acceptable Frontend Options
-
-You may use one of the following, or another reasonable frontend framework:
-
-- React
-- Next.js
-- Angular
-- Vue
+| Layer | Choice |
+|---|---|
+| Frontend | React 19 + TypeScript + Vite + Tailwind CSS v4 |
+| Backend | Node.js 22 + Express 5 + TypeScript (ts-node) |
+| Auth | Keycloak 26 (OIDC, RS256, JWKS) |
+| Database | PostgreSQL 16 |
+| Cache | Redis 7 |
+| Charts | Recharts |
+| Orchestration | Docker Compose (5 services on one bridge network) |
 
 ---
 
-## Core Functional Requirements
+## 2. Architecture
 
-### Authentication
+```mermaid
+flowchart LR
+  U([Browser])
+  FE[Frontend<br/>Vite preview<br/>:3000]
+  KC[(Keycloak 26<br/>:8080)]
+  BE[Backend<br/>Express<br/>:5000]
+  PG[(Postgres 16<br/>:5432)]
+  RD[(Redis 7<br/>:6379)]
 
-Use **Keycloak** as the identity provider.
+  U -->|HTML / JS| FE
+  U -->|OIDC login| KC
+  FE -->|Bearer JWT| BE
+  BE -->|JWKS verify| KC
+  BE --> PG
+  BE -.cache.-> RD
+  KC --> PG
+```
 
-Minimum expected setup:
+All services share one Docker network. Named volumes give persistence: `taskmanager_postgres_data` (both the `taskmanager` and `keycloak` databases) and `taskmanager_redis_data` (append-only file). Full breakdown in [`docs/architecture.md`](./docs/architecture.md). Visual walkthrough in [`docs/screenshots/`](./docs/screenshots/).
 
-- A Keycloak realm, for example `task-manager`
-- A frontend client
-- Backend token validation
-- At least two test users:
-  - `admin@example.com`
-  - `user@example.com`
+---
 
-The application does not need complex role-based access control, but role-based functionality is a bonus.
+## 3. Setup
 
-### Task Management
+### Prerequisites
 
-Each task should include at least:
+- Docker Desktop (or Docker Engine + Compose v2)
+- Git
+
+You do not need Node, pnpm, Postgres, Redis, or Keycloak on your machine — everything runs in containers.
+
+### Start
+
+```bash
+git clone <repo-url> sostene
+cd sostene
+cp .env.example .env
+docker compose up --build
+```
+
+The first run takes a few minutes (image pulls + Keycloak realm import). The stack is ready when the logs show:
 
 ```text
-id
-title
-description
-status
-owner_id
-created_at
-updated_at
+backend     | Task Manager API running on http://localhost:5000 (development)
+keycloak    | Imported realm task-manager
 ```
 
-Valid task statuses:
+(Inside the container the backend binds to `0.0.0.0:5000` so Docker can forward host port `5001` to it. You reach it from your browser at `http://localhost:5001`.)
 
-```text
-todo
-in_progress
-done
+### URLs
+
+| Service | URL |
+|---|---|
+| App | <http://localhost:3000> |
+| Backend health | <http://localhost:5001/health> |
+| Keycloak admin | <http://localhost:18080> |
+| Postgres | `localhost:15432` |
+| Redis | `localhost:6379` |
+
+> The default `.env` uses raised host ports (`5001`, `15432`, `18080`) to avoid clashes with common local services. If you would rather use the standard ports (`5000`, `5432`, `8080`), edit `.env` — `.env.example` shows those values as the documented defaults.
+
+### Keycloak admin console
+
+URL <http://localhost:18080>, username `admin`, password `admin`. The relevant realm is `task-manager`; the frontend client is `taskmanager-frontend`. The two seeded test users (see next section) have stable UUIDs pinned in `keycloak/realm-export.json`, so they survive a `docker compose down -v`.
+
+### Common commands
+
+```bash
+docker compose down              # stop, keep data
+docker compose down -v           # stop, wipe all data
+docker compose up -d --build     # rebuild after code changes
+docker compose logs -f backend   # tail one service
+docker compose ps                # see what is running
 ```
 
-Optional fields that can improve the dashboard:
+### Local development with hot reload
 
-```text
-priority: low | medium | high
-due_date
-completed_at
+The frontend container serves a built bundle (no HMR). For iteration, run it on the host against the dockerized backend:
+
+```bash
+cd frontend && pnpm install && pnpm dev   # http://localhost:5173
 ```
-
-### API Requirements
-
-The backend should expose protected API endpoints similar to:
-
-```http
-GET    /api/me
-GET    /api/tasks
-POST   /api/tasks
-GET    /api/tasks/:id
-PUT    /api/tasks/:id
-DELETE /api/tasks/:id
-```
-
-All `/api/*` routes must require authentication.
-
-The backend must ensure that one user cannot access another user's tasks.
 
 ---
 
-## Visualization and Analytics Requirement
+## 4. Test user credentials
 
-The application must include a dashboard page.
+Two users are auto-imported by Keycloak on first boot. No manual realm or user setup is required.
 
-Suggested route:
+| Email | Password | Realm roles | Keycloak UUID |
+|---|---|---|---|
+| `admin@example.com` | `admin` | `admin`, `user` | `00000000-0000-0000-0000-000000000001` |
+| `user@example.com` | `password` | `user` | `00000000-0000-0000-0000-000000000002` |
 
-```text
-/dashboard
+The UUIDs are deliberately pinned in `keycloak/realm-export.json` so a backup taken at one point in time can still be restored after a full `docker compose down -v`. Without pinned IDs, Keycloak would generate a new random UUID per user on every realm import, and restored tasks would end up owned by a "ghost" user with no matching login.
+
+The Keycloak superuser (for the admin console, not the app) is `admin` / `admin`, configurable via `KEYCLOAK_ADMIN` and `KEYCLOAK_ADMIN_PASSWORD` in `.env`.
+
+---
+
+## 5. Environment variables
+
+Every variable is documented in `.env.example`. The defaults in that file are intentional local-dev values, committed so reviewers can run the project without guessing. Rotate every password before any non-local use.
+
+| Variable | Used by | Purpose |
+|---|---|---|
+| `NODE_ENV` | backend | `development` or `production` |
+| `FRONTEND_PORT` | compose | Host port for the frontend container |
+| `BACKEND_PORT` | compose | Host port for the backend container |
+| `POSTGRES_PORT` | compose | Host port for Postgres |
+| `REDIS_PORT` | compose | Host port for Redis |
+| `KEYCLOAK_PORT` | compose | Host port for Keycloak |
+| `POSTGRES_USER` | backend, keycloak, scripts | DB role used by both the app and Keycloak |
+| `POSTGRES_PASSWORD` | backend, keycloak | DB role password |
+| `POSTGRES_DB` | backend | Application database name |
+| `KEYCLOAK_DB` | postgres init | Keycloak's own database (separate from the app's) |
+| `REDIS_PASSWORD` | backend, redis | Redis `requirepass` |
+| `KEYCLOAK_ADMIN` | keycloak | Bootstrap admin username for the Keycloak console |
+| `KEYCLOAK_ADMIN_PASSWORD` | keycloak | Bootstrap admin password |
+| `KEYCLOAK_PUBLIC_URL` | backend (issuer validation), keycloak (`KC_HOSTNAME`) | The URL the browser sees; baked into the JWT `iss` claim |
+| `KEYCLOAK_REALM` | backend | Realm name; must match `realm-export.json` |
+| `VITE_API_BASE_URL` | frontend build | Backend URL the SPA calls |
+| `VITE_KEYCLOAK_URL` | frontend build | Public Keycloak URL |
+| `VITE_KEYCLOAK_REALM` | frontend build | Same realm name |
+| `VITE_KEYCLOAK_CLIENT_ID` | frontend build | Frontend (public) client ID |
+
+> `VITE_*` variables are baked into the frontend bundle at build time. After changing one in `.env`, run `docker compose up -d --build frontend` — restarting alone is not enough.
+
+---
+
+## 6. API documentation
+
+All `/api/*` endpoints require a Bearer JWT from Keycloak. Token verification uses `RS256`, the issuer is `${KEYCLOAK_PUBLIC_URL}/realms/${KEYCLOAK_REALM}`, and signing keys come from the JWKS endpoint (cached for 10 minutes).
+
+### Health
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | none | `{ "status": "ok" }` |
+
+### Current user
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/me` | Bearer | Returns `{ id, email, name }` from the token |
+
+### Tasks
+
+All task endpoints are owner-scoped (`owner_id = req.user.id`). A task that does not exist *or* belongs to another user returns **404** — existence is never leaked.
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| GET | `/api/tasks` | — | List your tasks, newest first |
+| POST | `/api/tasks` | `{ title*, description?, status?, priority?, due_date? }` | Create. Returns 201. |
+| GET | `/api/tasks/:id` | — | Get one |
+| PUT | `/api/tasks/:id` | partial of the above | Update |
+| DELETE | `/api/tasks/:id` | — | Delete, returns 204 |
+
+Validation rules:
+
+- `title` — required, 1–255 characters
+- `status` — one of `todo`, `in_progress`, `done`
+- `priority` — one of `low`, `medium`, `high`
+- `due_date` / `completed_at` — ISO 8601 string or `null`
+
+### Analytics
+
+All scoped to the authenticated user. All Redis-cached with a 30-second TTL.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/analytics/summary` | `{ total, todo, in_progress, done, completion_percentage }` |
+| GET | `/api/analytics/tasks-by-status` | `[{ status, count }]`, always returns all three statuses |
+| GET | `/api/analytics/tasks-created-over-time?days=30` | `[{ date, count }]` for the last N days (default 30, max 365). Zero-count days are filled in. |
+
+### Example: list your tasks with curl
+
+```bash
+TOKEN=$(curl -s -X POST \
+  -d "client_id=taskmanager-frontend" \
+  -d "username=user@example.com" \
+  -d "password=password" \
+  -d "grant_type=password" \
+  http://localhost:18080/realms/task-manager/protocol/openid-connect/token | jq -r .access_token)
+
+curl -H "Authorization: Bearer $TOKEN" http://localhost:5001/api/tasks
 ```
 
-The dashboard should include at least **3 meaningful analytics views** based on real PostgreSQL task data.
+---
 
-Minimum expected visualizations:
+## 7. Dashboard and visualizations
 
-1. **Tasks by status**
-   - Example: `todo`, `in_progress`, `done`
-   - Recommended chart: bar chart or pie chart
+The `/dashboard` page renders three sections, each loaded independently so a failure in one does not blank the page:
 
-2. **Tasks created over time**
-   - Example: number of tasks created per day
-   - Recommended chart: line chart or bar chart
+1. **Stat cards** — Total tasks, Completed, In progress, Completion %.
+2. **Tasks by status** — pie chart with color-coded slices (`todo` / `in_progress` / `done`).
+3. **Tasks created over the last 30 days** — area chart with a gapless time series (zero-count days are included so the line never breaks).
 
-3. **User productivity summary**
-   - Example:
-     - total tasks
-     - completed tasks
-     - in-progress tasks
-     - completion percentage
+All numbers come from real `tasks` rows aggregated server-side and filtered by `owner_id`. A request from user A would never include user B's rows.
 
-Optional visualizations:
+---
 
-- Tasks by priority
-- Completed vs overdue tasks
-- Average completion time
-- Tasks due soon
+## 8. Redis usage
 
-### Analytics API Endpoints
+### What Redis is used for
 
-Create protected analytics endpoints such as:
+Read-through cache in front of the three analytics endpoints. Task CRUD is **not** cached (writes flow straight to Postgres).
 
-```http
-GET /api/analytics/tasks-by-status
-GET /api/analytics/tasks-created-over-time
-GET /api/analytics/summary
+| Endpoint | Cache key | TTL |
+|---|---|---|
+| `GET /api/analytics/summary` | `analytics:summary:<ownerId>` | 30s |
+| `GET /api/analytics/tasks-by-status` | `analytics:status:<ownerId>` | 30s |
+| `GET /api/analytics/tasks-created-over-time` | `analytics:timeline:<ownerId>:<days>` | 30s |
+
+### Why Redis is useful here
+
+Analytics queries aggregate over the entire `tasks` table per user. On the dashboard, those three queries fire on every page load and every section refresh. Caching them for 30 seconds collapses repeated visits and tab switches into a single Postgres round-trip, while still being short enough that any task creation, update, or deletion is reflected immediately (see invalidation below).
+
+### Invalidation
+
+On every successful `createTask` / `updateTask` / `deleteTask`, the backend runs `SCAN MATCH analytics:*:<ownerId>*` and `DEL`s every matching key. The next dashboard refresh produces a `MISS` and recomputes.
+
+### Graceful degradation
+
+The cache wrapper in `backend/src/utils/cache.ts` is fully `try/catch`-ed. If Redis is down or unreachable, the cache layer logs a warning and the request transparently falls through to Postgres. The API stays online.
+
+### How to verify Redis is being used
+
+```bash
+docker compose logs -f backend | grep '\[cache\]'    # HIT / MISS / invalidated lines
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" KEYS 'analytics:*'
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" MONITOR   # live command stream
 ```
 
-All analytics must be scoped to the logged-in user.
+Implementation files:
 
-A user should not be able to see another user's analytics.
-
----
-
-## Redis Requirement
-
-Use Redis for at least one meaningful purpose.
-
-Acceptable Redis use cases include:
-
-- Session storage
-- User profile cache
-- Token/session cache
-- Rate limiting
-- Caching task analytics
-- Caching task summary counts
-
-You should document:
-
-- What Redis is used for
-- Why Redis is useful in that part of the application
-- How we can verify Redis is being used
+- `backend/src/config/redis.ts` — singleton client with lazy connect and non-fatal error events.
+- `backend/src/utils/cache.ts` — `cached(key, ttl, fn)` and `invalidatePattern(pattern)`.
+- `backend/src/services/analyticsService.ts` — wraps each function in `cached(...)`.
+- `backend/src/services/tasksService.ts` — invalidates after every successful write.
 
 ---
 
-## PostgreSQL Requirement
+## 9. Backup and restore
 
-Use PostgreSQL as the main application database.
+Two scripts in `scripts/` wrap `pg_dump` and `psql` against the running Postgres container. Both read `POSTGRES_USER` and `POSTGRES_DB` from `.env`. The stack must be running.
 
-The database should store:
-
-- User-owned tasks
-- Any additional data required by the application
-
-You should include either:
-
-- Database migrations, or
-- A clear schema initialization process
-
-Data should persist across container restarts.
-
----
-
-## Backup and Restore Requirement
-
-Include a script or documented command for backing up PostgreSQL using `pg_dump`.
-
-Suggested script:
+### Backup
 
 ```bash
 ./scripts/backup-db.sh
 ```
 
-Expected backup output example:
+Output:
 
 ```text
-backups/task-manager-YYYY-MM-DD.sql
+backups/task-manager-2026-05-31-114701.sql
 ```
 
-Also include a restore script or documented restore command.
-
-Suggested script:
+### Restore
 
 ```bash
-./scripts/restore-db.sh backups/example.sql
+./scripts/restore-db.sh backups/task-manager-2026-05-31-114701.sql
 ```
 
-The README must explain how to perform both backup and restore.
+Type `yes` at the prompt to confirm. The script uses `pg_dump --clean --if-exists`, so the restore drops and recreates each object cleanly.
 
----
+### Verifying the cycle survives a full reset
 
-## Docker Compose Requirement
+Because Keycloak user UUIDs are pinned in `realm-export.json`, the following sequence works end-to-end:
 
-The full application should run with:
+1. Create a few tasks in the UI.
+2. `./scripts/backup-db.sh`
+3. `docker compose down -v && docker compose up -d --build`
+4. Sign in again — the task list is empty.
+5. `./scripts/restore-db.sh backups/<filename>.sql`
+6. Refresh the page — tasks reappear, owned by the same admin user as before.
+
+### Equivalent one-liners (no scripts needed)
 
 ```bash
-docker compose up --build
+# backup
+mkdir -p backups && docker compose exec -T postgres \
+  pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" --clean --if-exists \
+  > "backups/task-manager-$(date +%Y-%m-%d-%H%M%S).sql"
+
+# restore
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  < backups/task-manager-<timestamp>.sql
 ```
 
-Expected services:
+---
+
+## 10. Known limitations
+
+| Limitation | Impact | How I would fix it |
+|---|---|---|
+| **CORS is wide open** (`app.use(cors())`) | Any origin can hit the API once it has a valid token. | Restrict to `process.env.CORS_ORIGIN` (the frontend URL). |
+| **No `schema_migrations` tracking table.** Migrations re-run on every boot, only idempotent because of `IF NOT EXISTS` and DO-block guards. | Adding a future migration that depends on data introduced by an earlier one is risky. | Add a `schema_migrations` table and record each successfully applied file. |
+| **No automated tests, no CI.** | Bonus rubric points missed. | Vitest + supertest for backend endpoint tests; a GitHub Actions workflow that runs `tsc --noEmit` for both packages on every PR. The most important test is the owner-scoping rule: user A cannot read, update, or delete user B's tasks (must return 404, not 403, to avoid leaking existence). |
+| **No Swagger/OpenAPI docs.** | Bonus rubric points missed. | `swagger-jsdoc` + `swagger-ui-express` would expose `/api/docs` derived from the existing route handlers. |
+| **No backend or Keycloak healthchecks in compose.** Postgres and Redis already have them. | Compose cannot gate the frontend on backend readiness, only on backend `started`. | Add a `healthcheck` block hitting `GET /health` for the backend and `/health/ready` for Keycloak. |
+| **The `admin` role is defined but not enforced.** | All authenticated users have the same access. | Read realm roles from `realm_access.roles` in the JWT, expose a `requireRole('admin')` middleware, gate an admin-only `/api/admin/*` namespace. |
+| **No `pgadmin` service (rubric-optional).** | Browsing the database from a UI requires `docker compose exec postgres psql ...`. | Add a `pgadmin/pgadmin4` service to `docker-compose.yml`. |
+
+---
+
+## 11. AI usage
+
+See [`AI_USAGE.md`](./AI_USAGE.md) for the full disclosure: which tool was used, sample prompts, what was accepted, what was rejected or modified, and the security and correctness checks performed personally.
+
+---
+
+## 12. Repository structure
 
 ```text
-frontend
-backend
-postgres
-redis
-keycloak
+sostene/
+├── README.md                       # this file
+├── AI_USAGE.md                     # AI disclosure
+├── docker-compose.yml
+├── .env.example
+├── backend/
+│   ├── Dockerfile
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── migrations/
+│   │   └── 001_init.sql
+│   └── src/
+│       ├── app.ts                  # express app (helmet, cors, json)
+│       ├── index.ts                # bootstrap: migrations → redis → listen
+│       ├── config/                 # constants, db pool, redis client
+│       ├── controllers/            # tasks, analytics
+│       ├── middlewares/            # auth (JWT/JWKS), error and 404 handlers
+│       ├── routes/                 # me, tasks, analytics
+│       ├── services/               # tasksService, analyticsService
+│       ├── types/                  # express.d.ts (Request.user augmentation)
+│       └── utils/
+│           └── cache.ts            # cached() + invalidatePattern()
+├── frontend/
+│   ├── Dockerfile
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── public/
+│   │   └── silent-check-sso.html   # Keycloak silent SSO helper
+│   └── src/
+│       ├── App.tsx
+│       ├── main.tsx
+│       ├── config.ts
+│       ├── keycloak.ts
+│       ├── index.css
+│       ├── api/                    # client.ts + types.ts
+│       ├── components/             # NavBar, TaskCard, TaskForm
+│       ├── hooks/
+│       │   └── useTasks.ts
+│       ├── lib/                    # errors.ts, taskLabels.ts
+│       └── pages/                  # LandingPage, TasksPage, DashboardPage
+├── keycloak/
+│   └── realm-export.json           # auto-imported on first Keycloak boot
+├── postgres/
+│   └── init/
+│       └── 01-create-keycloak-db.sql
+├── scripts/
+│   ├── backup-db.sh
+│   └── restore-db.sh
+└── docs/
+    ├── architecture.md
+    └── screenshots/
+        ├── README.md
+        ├── 01-landing.png
+        ├── 02-login.png
+        ├── 03-tasks-empty.png
+        ├── 04-task-form.png
+        ├── 05-tasks-board.png
+        ├── 06-dashboard.png
+        └── 07-keycloak-admin.png
 ```
-
-Optional service:
-
-```text
-pgadmin
-```
-
-The setup should not require hidden manual steps. If a manual step is required, it must be clearly documented.
-
----
-
-## AI Usage Requirement
-
-AI tools are allowed for this assignment.
-
-However, we want to understand how you use AI as an engineer.
-
-Please include a file named:
-
-```text
-AI_USAGE.md
-```
-
-This file should answer:
-
-1. Which AI tools did you use?
-2. What parts of the assignment did you use AI for?
-3. What prompts were most useful?
-4. What AI-generated code did you accept?
-5. What AI-generated code did you reject or modify?
-6. What security or correctness checks did you personally perform?
-7. What would you improve with one more day?
-
-Please include at least **3 real prompt examples** you used.
-
-We are not judging whether you used AI. We are judging whether you used it responsibly.
-
----
-
-## Suggested Repository Structure
-
-```text
-task-manager-assignment/
-  README.md
-  AI_USAGE.md
-  docker-compose.yml
-  .env.example
-
-  frontend/
-    Dockerfile
-    src/
-
-  backend/
-    Dockerfile
-    src/
-    migrations/
-
-  scripts/
-    backup-db.sh
-    restore-db.sh
-
-  docs/
-    architecture.md
-    screenshots/
-```
-
----
-
-## README Requirements
-
-Your `README.md` should include:
-
-1. Project overview
-2. Architecture explanation or diagram
-3. Setup instructions
-4. Test user credentials
-5. Environment variables
-6. API documentation
-7. Dashboard and visualization explanation
-8. Redis usage explanation
-9. Backup and restore instructions
-10. Known limitations
-11. AI usage summary
-
----
-
-## Submission Requirements
-
-Please submit:
-
-1. Push GitHub main branch
-2. Short walkthrough
-3. Screenshot of successful Keycloak login
-4. Screenshot of task CRUD functionality
-5. Screenshot of the dashboard/visualizations
-6. Screenshot or logs proving Redis is being used
-7. Screenshot or terminal output showing successful `pg_dump`
-8. `AI_USAGE.md`
-
----
-
-## Evaluation Rubric
-
-Total: **110 points**
-
-### 1. Docker and Local Setup — 20 points
-
-| Criteria | Points |
-|---|---:|
-| `docker compose up --build` works | 6 |
-| Includes frontend, backend, PostgreSQL, Redis, and Keycloak | 5 |
-| Sensible environment variable handling | 3 |
-| Clear setup documentation | 3 |
-| Services restart cleanly | 3 |
-
-### 2. Authentication with Keycloak — 20 points
-
-| Criteria | Points |
-|---|---:|
-| Frontend login/logout works | 4 |
-| Backend validates Keycloak tokens | 5 |
-| Protected APIs reject unauthenticated requests | 4 |
-| User identity is correctly mapped to tasks | 4 |
-| Keycloak setup is documented or importable | 3 |
-
-### 3. Backend Quality — 15 points
-
-| Criteria | Points |
-|---|---:|
-| Clean API design | 3 |
-| Correct task CRUD behavior | 4 |
-| Proper user-level data isolation | 4 |
-| Input validation and error handling | 2 |
-| Code organization | 2 |
-
-### 4. Frontend Quality — 10 points
-
-| Criteria | Points |
-|---|---:|
-| Login flow is usable | 3 |
-| Task UI works end-to-end | 4 |
-| Handles loading and error states | 2 |
-| Basic clean UX | 1 |
-
-### 5. PostgreSQL and Backup — 10 points
-
-| Criteria | Points |
-|---|---:|
-| Proper schema or migrations | 3 |
-| Data persists across restarts | 2 |
-| `pg_dump` backup works | 3 |
-| Restore process is documented or scripted | 2 |
-
-### 6. Redis Usage — 10 points
-
-| Criteria | Points |
-|---|---:|
-| Redis is actually integrated | 4 |
-| Redis has a meaningful purpose | 3 |
-| Candidate can explain why Redis was used | 2 |
-| Handles Redis failure reasonably | 1 |
-
-### 7. Visualization and Analytics — 10 points
-
-| Criteria | Points |
-|---|---:|
-| Dashboard page exists | 2 |
-| Shows at least 3 meaningful charts/cards | 3 |
-| Analytics are based on real PostgreSQL data | 2 |
-| Analytics respect logged-in user scope | 2 |
-| Charts are readable and useful | 1 |
-
-### 8. AI Usage and Engineering Judgment — 15 points
-
-| Criteria | Points |
-|---|---:|
-| Clear `AI_USAGE.md` | 3 |
-| Provides real prompt examples | 2 |
-| Shows evidence of reviewing AI-generated code | 3 |
-| Documents rejected or modified AI suggestions | 2 |
-| Uses AI to accelerate, not blindly replace thinking | 3 |
-| Documents tradeoffs and next steps | 2 |
-
----
-
-## Bonus Points
-
-| Bonus | Points |
-|---|---:|
-| Role-based access using Keycloak roles | +5 |
-| Automated tests | +5 |
-| GitHub Actions CI | +5 |
-| Keycloak realm import file included | +5 |
-| API docs using Swagger/OpenAPI | +3 |
-| Health checks for services | +3 |
-| Clean architecture diagram | +2 |
-
----
-
-## Final Notes
-
-We are looking for practical engineering judgment.
-
-A good submission should be easy to run, easy to understand, and honest about tradeoffs.
-
-Please focus on:
-
-- Security basics
-- Correct authentication flow
-- Clean Docker setup
-- Clear documentation
-- Real Redis usage
-- Real PostgreSQL persistence
-- Useful dashboard visualizations
-- Responsible AI-assisted development

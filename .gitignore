@@ -1,0 +1,71 @@
+# -----------------------------------------------------------------------------
+# file covers node_modules, .env, build artifacts, etc. in every subfolder.
+# Per-package .gitignore files (backend/, frontend/) add anything specific.
+# -----------------------------------------------------------------------------
+
+# --- Node / pnpm ---
+node_modules/
+.pnpm-store/
+.pnp.*
+
+# --- Build outputs ---
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# --- Logs ---
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# --- Environment files (keep .env.example) ---
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.production.local
+!.env.example
+
+# --- Database backups produced by scripts/backup-db.sh ---
+backups/
+*.sql.gz
+*.dump
+
+# --- Test / coverage ---
+coverage/
+*.lcov
+.nyc_output/
+
+# --- Caches ---
+.cache/
+.parcel-cache/
+.eslintcache
+.vite/
+
+# --- Editors / IDEs ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# --- OS junk ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# --- Local Docker overrides (optional, never commit secrets) ---
+docker-compose.override.yml
